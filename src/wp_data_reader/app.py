@@ -3,6 +3,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from rich.console import Group
+from rich.table import Table
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -16,6 +19,17 @@ from .export import build_media_refs, default_filename, export_html, export_mark
 from .models import PostRecord, list_post_types, list_sites, load_post, query_posts
 
 ALL = "__all__"
+
+STATUS_STYLES = {
+    "publish": "bold black on green",
+    "private": "bold white on red",
+    "draft": "bold black on yellow",
+    "pending": "bold black on yellow",
+    "future": "bold white on blue",
+    "trash": "bold white on grey42",
+    "auto-draft": "dim white on grey30",
+    "inherit": "dim white on grey30",
+}
 
 
 class ExportModal(ModalScreen[None]):
@@ -190,29 +204,50 @@ class WPReaderApp(App):
     def show_post(self, row_id: int) -> None:
         post = load_post(self.conn, row_id)
         self.current_post = post
-        self.query_one("#meta-panel", Static).update(self._meta_text(post))
+        self.query_one("#meta-panel", Static).update(self._meta_panel(post))
         html = prepare_html(post.content)
         md = html_to_markdown(html)
         self.query_one("#content-view", Markdown).update(md)
 
-    def _meta_text(self, post: PostRecord) -> str:
-        cats = ", ".join(t.name for t in post.terms_by_taxonomy("category")) or "-"
-        tags = ", ".join(t.name for t in post.terms_by_taxonomy("post_tag")) or "-"
+    def _meta_panel(self, post: PostRecord) -> Group:
+        header = Text(post.display_title, style="bold")
+        header.append("  ")
+        header.append(
+            f" {post.status.upper()} ",
+            style=STATUS_STYLES.get(post.status, "bold white on grey35"),
+        )
+        if post.password:
+            header.append(" PASSWORD PROTECTED ", style="bold black on dark_orange")
+
+        subtitle = Text(f"{post.post_type} · {post.site_label}", style="dim")
+
+        cats = ", ".join(t.name for t in post.terms_by_taxonomy("category"))
+        tags = ", ".join(t.name for t in post.terms_by_taxonomy("post_tag"))
         interesting_meta = {
             k: v for k, v in post.meta.items()
             if not k.startswith("_") or k in ("_wp_page_template",)
         }
         meta_line = "  ".join(f"{k}={v[0]!r}" for k, v in list(interesting_meta.items())[:6])
-        lines = [
-            f"[b]{post.display_title}[/b]  ({post.site_label})",
-            f"Type: {post.post_type}   Status: {post.status}   Author: {post.author}",
-            f"Date: {post.date}   Modified: {post.modified}   Slug: {post.name}",
-            f"Categories: {cats}   Tags: {tags}",
-        ]
+
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="dim", justify="right", no_wrap=True)
+        table.add_column(ratio=1)
+
+        def add(label: str, value: str) -> None:
+            if value:
+                table.add_row(label, value)
+
+        add("Author", post.author)
+        add("Date", post.date)
+        add("Modified", post.modified)
+        add("Slug", post.name)
+        add("Categories", cats)
+        add("Tags", tags)
         if meta_line:
-            lines.append(f"Custom fields: {meta_line}")
-        lines.append(f"Total meta keys: {len(post.meta)}")
-        return "\n".join(lines)
+            add("Custom fields", meta_line)
+        add("Meta keys", str(len(post.meta)))
+
+        return Group(header, subtitle, Text(""), table)
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()

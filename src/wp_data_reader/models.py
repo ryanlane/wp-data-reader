@@ -29,6 +29,7 @@ class PostRecord:
     author: str
     guid: str
     parent: int
+    password: str = ""
     meta: dict[str, list[str]] = field(default_factory=dict)
     terms: list[Term] = field(default_factory=list)
 
@@ -139,6 +140,7 @@ def load_post(conn: sqlite3.Connection, row_id: int) -> PostRecord:
         author=author,
         guid=p["guid"] or "",
         parent=p["post_parent"] or 0,
+        password=p["post_password"] or "",
         meta=meta,
         terms=terms,
     )
