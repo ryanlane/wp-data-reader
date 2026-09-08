@@ -21,6 +21,10 @@ The first run parses the dump(s) into a local SQLite cache
 (`.wp_data_reader_cache.sqlite3`, next to the first dump file by default;
 override with `--db`). Later runs re-import automatically only if a dump
 file's size or mtime changed. Force a full re-import with `--rebuild`.
+Multiple dump files are parsed in parallel (one OS process per file, capped
+at your CPU count by default — override with `--jobs`); the UI comes up
+immediately with a progress bar and fills in with posts from each site as
+soon as that file finishes, rather than blocking until everything is done.
 
 A single dump file can contain more than one WordPress install if it uses
 multiple table prefixes (e.g. `wp_`, `AT_`); each prefix is treated as its
@@ -28,8 +32,15 @@ own "site" and can be selected independently in the UI.
 
 ## In the TUI
 
-- `/` — focus the search box (full-text search over title/content/excerpt)
-- Site / Type dropdowns — narrow the list to one imported site and/or post type
+- `/` — focus the search box (full-text search over title/content/excerpt,
+  debounced so fast typing doesn't re-query on every keystroke); matches are
+  highlighted in the content view
+- Site / Type dropdowns — narrow the list to one imported site and/or post
+  type. Type defaults to "Posts & Pages", since a WordPress install's
+  `posts` table is usually mostly revisions and plugin bookkeeping rows —
+  pick "All types" to see those too
+- Clicking a link in the content view asks whether to open it in your
+  browser or copy the URL, rather than opening it immediately
 - `e` — export the selected post/page as a standalone HTML file
 - `m` — export the selected post/page as Markdown (with YAML front matter)
 - `q` — quit
@@ -44,10 +55,15 @@ content as a resized variant, or gallery shortcodes with no filename at all.
 
 - `dumpparser.py` — a lightweight scanner for `CREATE TABLE` / `INSERT INTO`
   statements (handles both the "with column list" and "bare VALUES" dump
-  styles), with a hand-rolled tokenizer for row values.
+  styles), with a hand-rolled tokenizer for row values, yielding rows in
+  chunks so large tables can be imported and reported on incrementally.
 - `importer.py` / `db.py` — loads `posts`, `postmeta`, `terms`,
   `term_taxonomy`, `term_relationships`, `users`, and NextGEN gallery tables
-  into a local SQLite cache, with an FTS5 index over post content.
+  into a local SQLite cache, with an FTS5 index over post content. Each dump
+  file is parsed and imported into its own private, uncontended "shard" db
+  in a worker process (SQLite only allows one writer at a time, so sharing
+  a single file across processes serializes them instead of speeding
+  anything up), then merged into the main cache with a few bulk SQL copies.
 - `content.py` — reconstructs rendered HTML from raw `post_content`
   (replicating WordPress's `wpautop` for classic-editor content), converts
   it to Markdown for display/export, and resolves embedded media.

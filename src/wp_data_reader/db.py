@@ -11,6 +11,17 @@ CREATE TABLE IF NOT EXISTS imported_files (
     mtime REAL NOT NULL
 );
 
+-- Cross-process progress reporting: worker processes (one per dump file)
+-- update their row here as they parse, and the UI polls this table.
+CREATE TABLE IF NOT EXISTS import_progress (
+    path TEXT PRIMARY KEY,
+    table_name TEXT,
+    fraction REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    updated_at REAL
+);
+
 CREATE TABLE IF NOT EXISTS sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_file TEXT NOT NULL,
@@ -118,8 +129,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False: each caller (main UI thread, worker threads,
+    # worker processes) opens its own Connection object via this function;
+    # we just don't want sqlite3's thread-affinity check to get in the way
+    # when a connection is created in one Textual worker thread and used
+    # from that same thread later via call_from_thread callbacks.
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(SCHEMA)
     return conn
 

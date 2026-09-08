@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 from .app import WPReaderApp
-from .db import connect, rebuild_fts
-from .importer import import_all
+from .db import connect
+from .importer import ensure_fts_backfilled
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
         "--rebuild", action="store_true",
         help="Force re-import of all dump files even if unchanged.",
     )
+    parser.add_argument(
+        "--jobs", type=int, default=None,
+        help="Max dump files to import in parallel (default: one process per "
+             "CPU core, capped at the number of files).",
+    )
     args = parser.parse_args(argv)
 
     for p in args.dumps:
@@ -35,16 +40,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     db_path = args.db or (args.dumps[0].parent / ".wp_data_reader_cache.sqlite3")
+    # Creates the schema (and enables WAL) up front, synchronously, before
+    # any worker process/thread touches the same file.
     conn = connect(db_path)
+    ensure_fts_backfilled(conn)
 
-    def on_progress(path: Path, table: str) -> None:
-        print(f"\rImporting {path.name}: {table}" + " " * 10, end="", file=sys.stderr)
-
-    import_all(conn, args.dumps, force=args.rebuild, on_progress=on_progress)
-    print(file=sys.stderr)
-    rebuild_fts(conn)
-
-    app = WPReaderApp(conn)
+    app = WPReaderApp(conn, db_path=db_path, dump_paths=args.dumps,
+                       force_reimport=args.rebuild, max_workers=args.jobs)
     app.run()
     conn.close()
     return 0

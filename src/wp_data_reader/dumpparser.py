@@ -204,16 +204,23 @@ def _parse_create_table_columns(text: str, body_start: int) -> tuple[list[str], 
     return columns, end
 
 
-def _parse_values_section(text: str, pos: int) -> tuple[list[list], int]:
+def _iter_row_chunks(text: str, pos: int, chunk_size: int) -> Iterator[tuple[list[list], int]]:
+    """Parse the row tuples of a VALUES section, yielding them in chunks of
+    up to ``chunk_size`` rows (each paired with the text position reached so
+    far) so large tables can be written and reported on incrementally
+    instead of only after the whole INSERT statement has been parsed."""
     n = len(text)
-    rows: list[list] = []
+    chunk: list[list] = []
     while pos < n:
         while pos < n and text[pos].isspace():
             pos += 1
         if pos >= n or text[pos] != "(":
             break
         row, pos = _parse_row(text, pos)
-        rows.append(row)
+        chunk.append(row)
+        if len(chunk) >= chunk_size:
+            yield chunk, pos
+            chunk = []
         while pos < n and text[pos].isspace():
             pos += 1
         if pos < n and text[pos] == ",":
@@ -222,7 +229,8 @@ def _parse_values_section(text: str, pos: int) -> tuple[list[list], int]:
         if pos < n and text[pos] == ";":
             pos += 1
         break
-    return rows, pos
+    if chunk:
+        yield chunk, pos
 
 
 @dataclass(frozen=True)
@@ -230,16 +238,21 @@ class InsertBatch:
     table: TableRef
     columns: list[str]
     rows: list[list]
+    fraction: float  # 0..1 progress through the source text at this point
 
 
-def iter_inserts(text: str) -> Iterator[InsertBatch]:
-    """Yield every recognised INSERT statement's rows.
+def iter_inserts(text: str, chunk_size: int = 3000) -> Iterator[InsertBatch]:
+    """Yield chunks of rows from every recognised INSERT statement.
 
     Dumps vary: some INSERTs list column names explicitly, others
     (``INSERT INTO `t` VALUES (...)``) rely on the table's declared column
-    order, so we also track CREATE TABLE definitions as we scan.
+    order, so we also track CREATE TABLE definitions as we scan. Large
+    INSERTs (the common case for `posts`/`postmeta`) are yielded in chunks
+    rather than all at once, so a caller can write and report progress
+    incrementally instead of blocking until an entire table is parsed.
     """
     table_columns: dict[str, list[str]] = {}
+    total = max(len(text), 1)
     pos = 0
     while True:
         m = _STMT_RE.search(text, pos)
@@ -259,10 +272,9 @@ def iter_inserts(text: str) -> Iterator[InsertBatch]:
         else:
             columns = table_columns.get(table_name)
 
-        rows, pos = _parse_values_section(text, m.end())
+        ref = match_table(table_name) if columns is not None else None
 
-        if columns is None:
-            continue
-        ref = match_table(table_name)
-        if ref is not None:
-            yield InsertBatch(ref, columns, rows)
+        for rows, end in _iter_row_chunks(text, m.end(), chunk_size):
+            pos = end
+            if ref is not None and columns is not None:
+                yield InsertBatch(ref, columns, rows, pos / total)
