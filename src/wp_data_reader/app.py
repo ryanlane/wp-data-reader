@@ -14,7 +14,10 @@ from textual.widgets import (
     DataTable, Footer, Header, Input, Label, Markdown, Select, Static,
 )
 
-from .content import html_to_markdown, prepare_html
+from .content import (
+    apply_highlight_markers, extract_search_terms, highlight_html,
+    html_to_markdown, prepare_html,
+)
 from .export import build_media_refs, default_filename, export_html, export_markdown
 from .models import PostRecord, list_post_types, list_sites, load_post, query_posts
 
@@ -100,6 +103,11 @@ class WPReaderApp(App):
         border-bottom: solid $accent-darken-1;
         padding-bottom: 1;
         margin-bottom: 1;
+    }
+    #content-view MarkdownBlock > .code_inline {
+        background: $warning 60%;
+        color: $text;
+        text-style: bold;
     }
     """
     BINDINGS = [
@@ -206,7 +214,13 @@ class WPReaderApp(App):
         self.current_post = post
         self.query_one("#meta-panel", Static).update(self._meta_panel(post))
         html = prepare_html(post.content)
+        search = self.query_one("#search", Input).value.strip()
+        terms = extract_search_terms(search)
+        if terms:
+            html = highlight_html(html, terms)
         md = html_to_markdown(html)
+        if terms:
+            md = apply_highlight_markers(md)
         self.query_one("#content-view", Markdown).update(md)
 
     def _meta_panel(self, post: PostRecord) -> Group:

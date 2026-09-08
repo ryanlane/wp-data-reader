@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from bs4 import BeautifulSoup, NavigableString
 from markdownify import markdownify
 
 _BLOCK_TAG_RE = re.compile(
@@ -53,6 +54,44 @@ def prepare_html(post_content: str) -> str:
 
 def html_to_markdown(html: str) -> str:
     return markdownify(html, heading_style="ATX", bullets="-").strip()
+
+
+# --- Search-term highlighting ------------------------------------------
+
+_HL_START = ""
+_HL_END = ""
+_FTS_STOPWORDS = {"and", "or", "not", "near"}
+
+
+def extract_search_terms(query: str) -> list[str]:
+    """Pull plain words out of a user-typed search box value, for
+    highlighting purposes (ignores FTS5 boolean operators)."""
+    words = re.findall(r"[\w'-]+", query)
+    return [w for w in words if len(w) > 1 and w.lower() not in _FTS_STOPWORDS]
+
+
+def highlight_html(html: str, terms: list[str]) -> str:
+    """Wrap matches of ``terms`` (case-insensitive) in text nodes with
+    sentinel markers, leaving tags/attributes untouched."""
+    if not terms:
+        return html
+    pattern = re.compile("(" + "|".join(re.escape(t) for t in terms) + ")", re.IGNORECASE)
+    soup = BeautifulSoup(html, "html.parser")
+    for node in soup.find_all(string=True):
+        if node.parent and node.parent.name in ("script", "style"):
+            continue
+        text = str(node)
+        if not pattern.search(text):
+            continue
+        new_text = pattern.sub(lambda m: f"{_HL_START}{m.group(0)}{_HL_END}", text)
+        node.replace_with(NavigableString(new_text))
+    return str(soup)
+
+
+def apply_highlight_markers(markdown_text: str) -> str:
+    """Turn sentinel-wrapped matches into inline-code spans, the only
+    inline style the Markdown widget renders with a distinct background."""
+    return markdown_text.replace(_HL_START, "`").replace(_HL_END, "`")
 
 
 # --- Media resolution -------------------------------------------------
