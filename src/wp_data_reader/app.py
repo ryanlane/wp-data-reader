@@ -15,7 +15,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import (
-    DataTable, Footer, Header, Input, Label, Markdown, ProgressBar, Select, Static,
+    Button, DataTable, Footer, Header, Input, Label, Markdown, ProgressBar, Select, Static,
 )
 
 from .content import (
@@ -111,6 +111,12 @@ class LinkActionModal(ModalScreen[None]):
         color: $text-muted;
         margin-bottom: 1;
     }
+    #link-actions {
+        height: auto;
+    }
+    #link-actions Button {
+        margin-right: 1;
+    }
     """
 
     BINDINGS = [
@@ -127,7 +133,22 @@ class LinkActionModal(ModalScreen[None]):
         with Vertical(id="link-box"):
             yield Label("Link clicked")
             yield Static(self.url, id="link-url")
-            yield Static("[O] Open in browser   [C] Copy URL   [Esc] Cancel", classes="hint")
+            with Horizontal(id="link-actions"):
+                yield Button("Open in browser", id="link-open", variant="primary")
+                yield Button("Copy URL", id="link-copy")
+                yield Button("Cancel", id="link-cancel")
+
+    @on(Button.Pressed, "#link-open")
+    def open_pressed(self) -> None:
+        self.action_open()
+
+    @on(Button.Pressed, "#link-copy")
+    def copy_pressed(self) -> None:
+        self.action_copy()
+
+    @on(Button.Pressed, "#link-cancel")
+    def cancel_pressed(self) -> None:
+        self.action_cancel()
 
     def action_open(self) -> None:
         webbrowser.open(self.url)
