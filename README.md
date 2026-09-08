@@ -4,6 +4,13 @@ A terminal UI for browsing, searching, and exporting posts and pages from
 WordPress SQL dumps (mysqldump / phpMyAdmin `.sql` files) — no MySQL server
 required.
 
+## Install
+
+This project uses [uv](https://docs.astral.sh/uv/) to manage the Python
+environment and dependencies. If you don't have it yet, see the
+[installation instructions](https://docs.astral.sh/uv/getting-started/installation/)
+(a single install script for macOS/Linux/Windows, or via `pipx`/Homebrew/etc).
+
 ## Usage
 
 ```sh
