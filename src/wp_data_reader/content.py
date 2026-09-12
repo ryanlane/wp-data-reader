@@ -65,10 +65,27 @@ _FTS_STOPWORDS = {"and", "or", "not", "near"}
 
 
 def extract_search_terms(query: str) -> list[str]:
-    """Pull plain words out of a user-typed search box value, for
-    highlighting purposes (ignores FTS5 boolean operators)."""
+    """Pull plain words out of a user-typed search box value, for both
+    highlighting and building the FTS5 query itself (see
+    ``build_fts_query``) — so what gets searched and what gets highlighted
+    never disagree, and so free-typed punctuation/operators never reach
+    FTS5's own query syntax."""
     words = re.findall(r"[\w'-]+", query)
     return [w for w in words if len(w) > 1 and w.lower() not in _FTS_STOPWORDS]
+
+
+def build_fts_query(terms: list[str]) -> str | None:
+    """Turn plain search terms into an FTS5 MATCH query that's safe against
+    arbitrary user input: each term is quoted as its own phrase (with
+    embedded ``"`` doubled per FTS5's escaping rule) and prefix-matched, so
+    punctuation and reserved words (``AND``/``OR``/``NOT``, ``:``, ``(``,
+    ``*``, ...) in the search box are always treated as literal text rather
+    than FTS5 query syntax — which otherwise raises ``sqlite3.OperationalError``
+    for all sorts of ordinary search input (``don't``, ``C++``, trailing
+    ``.``/``%``/``/``, ...)."""
+    if not terms:
+        return None
+    return " ".join('"' + t.replace('"', '""') + '"*' for t in terms)
 
 
 def highlight_html(html: str, terms: list[str]) -> tuple[str, list[str]]:

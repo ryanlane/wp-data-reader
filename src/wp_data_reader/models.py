@@ -6,6 +6,8 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
+from .content import build_fts_query, extract_search_terms
+
 
 @dataclass
 class Term:
@@ -137,16 +139,27 @@ def query_posts(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[sqlite3.Row]:
+    """``search`` is the raw, un-escaped text from the search box (no
+    trailing ``*`` or other FTS5 syntax expected from the caller) — it's
+    turned into a safe FTS5 query here via ``extract_search_terms`` /
+    ``build_fts_query`` so arbitrary user input can never raise
+    ``sqlite3.OperationalError`` from FTS5's own query syntax."""
     clauses = []
     params: list = []
 
-    if search:
+    fts_query = build_fts_query(extract_search_terms(search)) if search else None
+    if search and fts_query is None:
+        # Something was typed, but none of it was an indexable term (e.g.
+        # only punctuation, or only FTS5-reserved words) — nothing can
+        # legitimately match, rather than silently ignoring the search.
+        base = "SELECT p.* FROM posts p WHERE 0"
+    elif fts_query is not None:
         base = (
             "SELECT p.* FROM posts p "
             "JOIN posts_fts f ON f.rowid = p.id "
             "WHERE posts_fts MATCH ?"
         )
-        params.append(search)
+        params.append(fts_query)
     else:
         base = "SELECT p.* FROM posts p WHERE 1=1"
 

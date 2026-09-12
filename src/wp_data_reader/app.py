@@ -776,7 +776,7 @@ class WPReaderApp(App):
             site_ids=list(site_ids) if site_ids else None,
             post_types=list(types) if types else None,
             statuses=statuses,
-            search=(search + "*") if search else None,
+            search=search or None,
             category=category,
             tag=tag,
             date_from=date_from or None,
