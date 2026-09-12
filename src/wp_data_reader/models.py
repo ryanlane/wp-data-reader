@@ -47,35 +47,37 @@ def list_sites(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM sites ORDER BY label").fetchall()
 
 
-def list_post_types(conn: sqlite3.Connection, site_id: int | None) -> list[str]:
-    if site_id is None:
+def list_post_types(conn: sqlite3.Connection, site_ids: list[int] | None) -> list[str]:
+    if site_ids is None:
         rows = conn.execute(
             "SELECT DISTINCT post_type FROM posts ORDER BY post_type"
         ).fetchall()
     else:
+        placeholders = ",".join("?" * len(site_ids))
         rows = conn.execute(
-            "SELECT DISTINCT post_type FROM posts WHERE site_id=? ORDER BY post_type",
-            (site_id,),
+            f"SELECT DISTINCT post_type FROM posts WHERE site_id IN ({placeholders}) ORDER BY post_type",
+            site_ids,
         ).fetchall()
     return [r["post_type"] for r in rows]
 
 
-def list_statuses(conn: sqlite3.Connection, site_id: int | None) -> list[str]:
-    if site_id is None:
+def list_statuses(conn: sqlite3.Connection, site_ids: list[int] | None) -> list[str]:
+    if site_ids is None:
         rows = conn.execute(
             "SELECT DISTINCT post_status FROM posts ORDER BY post_status"
         ).fetchall()
     else:
+        placeholders = ",".join("?" * len(site_ids))
         rows = conn.execute(
-            "SELECT DISTINCT post_status FROM posts WHERE site_id=? ORDER BY post_status",
-            (site_id,),
+            f"SELECT DISTINCT post_status FROM posts WHERE site_id IN ({placeholders}) ORDER BY post_status",
+            site_ids,
         ).fetchall()
     return [r["post_status"] for r in rows]
 
 
-def list_terms(conn: sqlite3.Connection, site_id: int | None, taxonomy: str) -> list[tuple[str, str]]:
+def list_terms(conn: sqlite3.Connection, site_ids: list[int] | None, taxonomy: str) -> list[tuple[str, str]]:
     """Distinct (name, slug) pairs for a taxonomy, for populating a filter dropdown."""
-    if site_id is None:
+    if site_ids is None:
         rows = conn.execute(
             """SELECT DISTINCT te.name AS name, te.slug AS slug
                FROM term_taxonomy tt
@@ -85,13 +87,14 @@ def list_terms(conn: sqlite3.Connection, site_id: int | None, taxonomy: str) -> 
             (taxonomy,),
         ).fetchall()
     else:
+        placeholders = ",".join("?" * len(site_ids))
         rows = conn.execute(
-            """SELECT DISTINCT te.name AS name, te.slug AS slug
+            f"""SELECT DISTINCT te.name AS name, te.slug AS slug
                FROM term_taxonomy tt
                JOIN terms te ON te.site_id = tt.site_id AND te.term_id = tt.term_id
-               WHERE tt.site_id = ? AND tt.taxonomy = ?
+               WHERE tt.site_id IN ({placeholders}) AND tt.taxonomy = ?
                ORDER BY te.name""",
-            (site_id, taxonomy),
+            (*site_ids, taxonomy),
         ).fetchall()
     return [(r["name"], r["slug"]) for r in rows]
 
@@ -125,7 +128,7 @@ def resolve_date_bound(value: str, *, end: bool) -> str | None:
 
 def query_posts(
     conn: sqlite3.Connection,
-    site_id: int | None = None,
+    site_ids: list[int] | None = None,
     post_types: list[str] | None = None,
     statuses: list[str] | None = None,
     search: str | None = None,
@@ -147,9 +150,9 @@ def query_posts(
     else:
         base = "SELECT p.* FROM posts p WHERE 1=1"
 
-    if site_id is not None:
-        clauses.append("p.site_id = ?")
-        params.append(site_id)
+    if site_ids:
+        clauses.append(f"p.site_id IN ({','.join('?' * len(site_ids))})")
+        params.extend(site_ids)
     if post_types:
         clauses.append(f"p.post_type IN ({','.join('?' * len(post_types))})")
         params.extend(post_types)

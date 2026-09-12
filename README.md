@@ -35,19 +35,24 @@ own "site" and can be selected independently in the UI.
 - `/` — focus the search box (full-text search over title/content/excerpt,
   debounced so fast typing doesn't re-query on every keystroke); matches are
   highlighted in the content view
-- Site / Type / Status dropdowns — narrow the list to one imported site,
-  post type, and/or status (publish, draft, pending, private, ...). Type
-  defaults to "Posts & Pages", since a WordPress install's `posts` table is
-  usually mostly revisions and plugin bookkeeping rows — pick "All types"
-  to see those too
-- With Type set to "Posts & Pages", two more filter rows appear:
-  - Category / Tag dropdowns, populated from that taxonomy's terms on the
-    selected site
+- `f` — open the Filters dialog. The first time a dump set's cache already
+  has data (e.g. a later run against unchanged dumps), this opens
+  automatically before the table appears, so you can choose scope up front
+  instead of everything loading at once:
+  - Sites / Content types — checkboxes, so you can include more than one at
+    once; Posts and Pages are checked by default, since a WordPress
+    install's `posts` table is usually mostly revisions and plugin
+    bookkeeping rows otherwise
+  - Status — publish, draft, pending, private, ...
+  - Category / Tag dropdowns, populated from that taxonomy's terms
   - From / To date fields, accepting `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`.
     Filling in just one field matches only that period (e.g. `2018` alone
     shows everything from 2018; `2018-02-08` alone shows just that day).
     Filling in both gives a range (e.g. `2012-12` to `2013-02` covers
     December 2012 through February 2013)
+
+  Choices are saved next to the SQLite cache (`<cache>.filters.json`) and
+  reused on the next run against the same dump set.
 - `d` — toggle showing the date before the title in the list (on by
   default) and collapse the Type/Status/Date columns, so the date is
   visible without needing a very wide window
@@ -66,6 +71,32 @@ original filename/path under `wp-content/uploads`, using the attachment and
 gallery tables in the dump — including images that only appear in the
 content as a resized variant, or gallery shortcodes with no filename at all.
 
+### If copying to the clipboard doesn't work
+
+`y` and "Copy URL" (in the link-click dialog) use `xclip`/`xsel`/`wl-copy` if
+one is installed, since some terminals and multiplexers block the OSC 52
+escape sequence that terminal apps otherwise rely on for clipboard access.
+If none of those are installed, install one for your session type:
+
+```sh
+sudo apt install xclip   # or xsel — X11
+sudo apt install wl-clipboard   # Wayland
+```
+
+If none of those can be installed (e.g. no access to the display server —
+over plain SSH without X/Wayland forwarding) it falls back to the OSC 52
+terminal escape sequence, which some terminals/multiplexers block by
+default:
+
+- Inside `tmux`, add `set -s set-clipboard on` to `.tmux.conf`.
+- Check your terminal emulator's settings for an OSC 52 / "clipboard from
+  remote application" permission.
+
+Separately, selecting text with the mouse to copy it natively (rather than
+using `y`) may need **Shift+drag** — the TUI captures plain mouse drags for
+its own UI, which otherwise pre-empts your terminal emulator's own text
+selection.
+
 ## How it works
 
 - `dumpparser.py` — a lightweight scanner for `CREATE TABLE` / `INSERT INTO`
@@ -83,3 +114,5 @@ content as a resized variant, or gallery shortcodes with no filename at all.
   (replicating WordPress's `wpautop` for classic-editor content), converts
   it to Markdown for display/export, and resolves embedded media.
 - `app.py` — the Textual TUI.
+- `config.py` — reads/writes the saved Filters selection
+  (`<cache>.filters.json`, next to the SQLite cache).

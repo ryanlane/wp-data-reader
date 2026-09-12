@@ -15,9 +15,12 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import (
-    Button, DataTable, Footer, Header, Input, Label, Markdown, ProgressBar, Select, Static,
+    Button, Checkbox, DataTable, Footer, Header, Input, Label, Markdown, ProgressBar, Select,
+    Static, TabbedContent, TabPane,
 )
 
+from .clipboard import copy_via_external_tool
+from .config import load_filters, save_filters
 from .content import (
     apply_highlight_markers, extract_search_terms, highlight_html,
     html_to_markdown, prepare_html,
@@ -30,7 +33,6 @@ from .models import (
 )
 
 ALL = "__all__"
-POSTS_AND_PAGES = "__posts_and_pages__"
 
 STATUS_STYLES = {
     "publish": "bold black on green",
@@ -172,12 +174,203 @@ class LinkActionModal(ModalScreen[None]):
         self.dismiss(None)
 
     def action_copy(self) -> None:
-        self.app.copy_to_clipboard(self.url)
+        self.app._copy_to_clipboard(self.url)  # type: ignore[attr-defined]
         self.app.notify("URL copied to clipboard")
         self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class FiltersModal(ModalScreen[dict | None]):
+    """Choose which sites/types to include (checkboxes) plus status,
+    taxonomy, and date range, all applied together on "Apply"."""
+
+    DEFAULT_CSS = """
+    FiltersModal {
+        align: center middle;
+    }
+    #filters-box {
+        width: 84%;
+        max-width: 100;
+        height: auto;
+        max-height: 90%;
+        border: thick $accent;
+        background: $panel;
+        padding: 1 2;
+    }
+    #filters-tabs {
+        height: auto;
+        max-height: 26;
+    }
+    .filters-heading {
+        margin-top: 1;
+        text-style: bold;
+    }
+    #filters-checks {
+        height: auto;
+        layout: horizontal;
+    }
+    #filters-sites, #filters-types {
+        height: auto;
+        width: 1fr;
+    }
+    #filters-row {
+        height: auto;
+        margin-top: 1;
+    }
+    #filters-row Select {
+        width: 1fr;
+        margin-right: 1;
+    }
+    #filters-dates {
+        height: auto;
+        margin-top: 1;
+    }
+    #filters-dates Input {
+        width: 1fr;
+        margin-right: 1;
+    }
+    #filters-actions {
+        height: auto;
+        margin-top: 1;
+    }
+    #filters-actions Button {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(
+        self,
+        sites: list[sqlite3.Row],
+        types: list[str],
+        statuses: list[str],
+        categories: list[tuple[str, str]],
+        tags: list[tuple[str, str]],
+        *,
+        selected_site_ids: set[int] | None,
+        selected_types: set[str] | None,
+        status: str | None,
+        category: str | None,
+        tag: str | None,
+        date_from: str,
+        date_to: str,
+        heading: str = "Filters",
+        initial_tab: str = "tab-filters",
+    ) -> None:
+        super().__init__()
+        self.sites = sites
+        self.types = types
+        self.statuses = statuses
+        self.categories = categories
+        self.tags = tags
+        self.selected_site_ids = selected_site_ids
+        self.selected_types = selected_types
+        self.status = status
+        self.category = category
+        self.tag = tag
+        self.date_from = date_from
+        self.date_to = date_to
+        self.heading = heading
+        self.initial_tab = initial_tab
+        # A single-site dump set has nothing to narrow by site, so that
+        # checkbox list would just be visual noise every time this opens.
+        self.show_sites = len(sites) > 1
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="filters-box"):
+            yield Label(self.heading)
+            with TabbedContent(id="filters-tabs", initial=self.initial_tab):
+                with TabPane("Status / Date / Taxonomy", id="tab-filters"):
+                    with Horizontal(id="filters-row"):
+                        yield Select(
+                            [("All statuses", ALL)] + [(s, s) for s in self.statuses],
+                            value=self.status or ALL, id="filter-status", allow_blank=False,
+                        )
+                        yield Select(
+                            [("All categories", ALL)] + list(self.categories),
+                            value=self.category or ALL, id="filter-category", allow_blank=False,
+                        )
+                        yield Select(
+                            [("All tags", ALL)] + list(self.tags),
+                            value=self.tag or ALL, id="filter-tag", allow_blank=False,
+                        )
+                    with Horizontal(id="filters-dates"):
+                        yield Input(
+                            value=self.date_from, placeholder="From (YYYY[-MM[-DD]])", id="filter-date-from",
+                        )
+                        yield Input(
+                            value=self.date_to, placeholder="To (YYYY[-MM[-DD]])", id="filter-date-to",
+                        )
+                with TabPane("Sites & Types" if self.show_sites else "Content types", id="tab-scope"):
+                    with Horizontal(id="filters-checks"):
+                        if self.show_sites:
+                            with Vertical(id="filters-sites"):
+                                yield Label("Sites", classes="filters-heading")
+                                for i, s in enumerate(self.sites):
+                                    checked = (
+                                        self.selected_site_ids is None
+                                        or s["id"] in self.selected_site_ids
+                                    )
+                                    yield Checkbox(s["label"], value=checked, id=f"fsite-{i}")
+                        with Vertical(id="filters-types"):
+                            yield Label("Content types", classes="filters-heading")
+                            for i, t in enumerate(self.types):
+                                if self.selected_types is None:
+                                    checked = t in ("post", "page")
+                                else:
+                                    checked = t in self.selected_types
+                                yield Checkbox(t, value=checked, id=f"ftype-{i}")
+            with Horizontal(id="filters-actions"):
+                yield Button("Apply", id="filters-apply", variant="primary")
+                yield Button("Cancel", id="filters-cancel")
+
+    @on(Button.Pressed, "#filters-apply")
+    def apply_pressed(self) -> None:
+        if self.show_sites:
+            site_ids = {
+                self.sites[i]["id"] for i in range(len(self.sites))
+                if self.query_one(f"#fsite-{i}", Checkbox).value
+            }
+            # An empty or fully-checked selection both mean "no restriction" —
+            # the former so unchecking everything by mistake doesn't produce
+            # a permanently empty table, the latter so newly-imported sites
+            # are picked up automatically without reopening this dialog.
+            if not site_ids or site_ids == {s["id"] for s in self.sites}:
+                site_ids = None
+        else:
+            site_ids = None
+
+        types = {
+            self.types[i] for i in range(len(self.types))
+            if self.query_one(f"#ftype-{i}", Checkbox).value
+        }
+        if not types or types == set(self.types):
+            types = None
+
+        status_val = self.query_one("#filter-status", Select).value
+        category_val = self.query_one("#filter-category", Select).value
+        tag_val = self.query_one("#filter-tag", Select).value
+        date_from = self.query_one("#filter-date-from", Input).value.strip()
+        date_to = self.query_one("#filter-date-to", Input).value.strip()
+
+        self.dismiss({
+            "site_ids": site_ids,
+            "types": types,
+            "status": None if status_val in (ALL, Select.BLANK, None) else status_val,
+            "category": None if category_val in (ALL, Select.BLANK, None) else category_val,
+            "tag": None if tag_val in (ALL, Select.BLANK, None) else tag_val,
+            "date_from": date_from,
+            "date_to": date_to,
+        })
+
+    @on(Button.Pressed, "#filters-cancel")
+    def cancel_pressed(self) -> None:
+        self.dismiss(None)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
 
 
 class WPReaderApp(App):
@@ -186,16 +379,6 @@ class WPReaderApp(App):
     #sidebar {
         width: 42%;
         border-right: solid $accent;
-    }
-    #filters {
-        height: auto;
-        padding: 0 1;
-    }
-    #filters .filter-row {
-        height: auto;
-    }
-    #filters .filter-row.hidden {
-        display: none;
     }
     #detail {
         padding: 1 2;
@@ -233,6 +416,7 @@ class WPReaderApp(App):
     SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     BINDINGS = [
         ("/", "focus_search", "Search"),
+        ("f", "open_filters", "Filters"),
         ("e", "export_html", "Export HTML"),
         ("m", "export_markdown", "Export Markdown"),
         ("y", "copy_highlights", "Copy highlights"),
@@ -264,13 +448,19 @@ class WPReaderApp(App):
         self._highlighted_matches: list[str] = []
         self._show_date_in_title = True
         self._known_site_count = 0
-        self._type_user_selected = False
-        self._suppress_type_change = False
         self._import_weights: dict[str, float] = {}
         self._import_paths: list[str] = []
         self._shard_paths: dict[str, Path] = {}
         self._shard_dir: Path | None = None
         self._shard_conns: dict[str, sqlite3.Connection] = {}
+        self._filters_customized = False
+        self._filter_site_ids: set[int] | None = None
+        self._filter_types: set[str] | None = None
+        self._filter_status: str | None = None
+        self._filter_category: str | None = None
+        self._filter_tag: str | None = None
+        self._filter_date_from: str = ""
+        self._filter_date_to: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -280,17 +470,6 @@ class WPReaderApp(App):
             yield ProgressBar(id="import-bar", total=100, show_eta=False)
         with Horizontal():
             with Vertical(id="sidebar"):
-                with Vertical(id="filters"):
-                    with Horizontal(classes="filter-row"):
-                        yield Select([], id="site-select", prompt="Site")
-                        yield Select([], id="type-select", prompt="Type")
-                        yield Select([], id="status-select", prompt="Status")
-                    with Horizontal(id="taxonomy-filters", classes="filter-row hidden"):
-                        yield Select([], id="category-select", prompt="Category")
-                        yield Select([], id="tag-select", prompt="Tag")
-                    with Horizontal(id="date-filters", classes="filter-row hidden"):
-                        yield Input(placeholder="From (YYYY[-MM[-DD]])", id="date-from")
-                        yield Input(placeholder="To (YYYY[-MM[-DD]])", id="date-to")
                 yield Input(placeholder="Search title/content... (press /)", id="search")
                 yield DataTable(id="post-table", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="detail"):
@@ -301,18 +480,21 @@ class WPReaderApp(App):
     def on_mount(self) -> None:
         self._configure_table_columns()
 
-        self._refresh_site_options()
-        self._refresh_type_options()
-        self._refresh_status_options()
-        self._refresh_taxonomy_options()
-        self.refresh_posts()
-
         files_to_import = [
             p for p in self.dump_paths
             if self.force_reimport or needs_import(self.conn, p)
         ]
+
+        loaded_saved_filters = self._load_filters_config()
+        self.refresh_posts()
+
         if files_to_import and self.db_path is not None:
             self._start_import(files_to_import)
+        elif not loaded_saved_filters and list_sites(self.conn):
+            # Data is already there (reopening an unchanged dump set) and no
+            # prior session's choices were saved yet — ask up front what to
+            # include rather than dumping the whole site into the table.
+            self._open_filters_modal(initial=True)
 
     # --- Background import ---------------------------------------------
 
@@ -402,10 +584,6 @@ class WPReaderApp(App):
         site_count = self.conn.execute("SELECT count(*) c FROM sites").fetchone()["c"]
         if site_count != self._known_site_count:
             self._known_site_count = site_count
-            self._refresh_site_options()
-            self._refresh_type_options()
-            self._refresh_status_options()
-            self._refresh_taxonomy_options()
             self.refresh_posts()
 
     def _finish_import(self, errors: list[str]) -> None:
@@ -419,127 +597,107 @@ class WPReaderApp(App):
             self._spinner_timer.stop()
             self._spinner_timer = None
         self.query_one("#import-status", Horizontal).add_class("hidden")
-        self._refresh_site_options()
-        self._refresh_type_options()
-        self._refresh_status_options()
-        self._refresh_taxonomy_options()
         self.refresh_posts()
         if errors:
             self.notify("Import finished with errors:\n" + "\n".join(errors), severity="error", timeout=10)
         else:
             self.notify("Import complete.")
+        if not self._filters_customized and list_sites(self.conn):
+            self._open_filters_modal(initial=True)
 
-    def _refresh_site_options(self) -> None:
-        current = self.query_one("#site-select", Select).value
+    # --- Filters ---------------------------------------------------------
+
+    def action_open_filters(self) -> None:
+        self._open_filters_modal()
+
+    def _open_filters_modal(self, *, initial: bool = False) -> None:
+        site_ids, types, status, category, tag, date_from, date_to = self._current_filter_values()
         sites = list_sites(self.conn)
-        site_select = self.query_one("#site-select", Select)
-        site_select.set_options(
-            [("All sites", ALL)] + [(s["label"], str(s["id"])) for s in sites]
+        heading = "Choose what to load for this session" if initial else "Filters"
+        self.push_screen(
+            FiltersModal(
+                sites,
+                list_post_types(self.conn, None),
+                list_statuses(self.conn, None),
+                list_terms(self.conn, None, "category"),
+                list_terms(self.conn, None, "post_tag"),
+                selected_site_ids=site_ids,
+                selected_types=types,
+                status=status,
+                category=category,
+                tag=tag,
+                date_from=date_from,
+                date_to=date_to,
+                heading=heading,
+                initial_tab="tab-scope" if initial else "tab-filters",
+            ),
+            self._apply_filters_result,
         )
-        valid_values = {ALL, *(str(s["id"]) for s in sites)}
-        site_select.value = current if current in valid_values else ALL
 
-    def _current_site_id(self) -> int | None:
-        val = self.query_one("#site-select", Select).value
-        if val in (ALL, Select.BLANK, None):
-            return None
-        return int(val)  # type: ignore[arg-type]
+    def _apply_filters_result(self, result: dict | None) -> None:
+        if result is None:
+            return
+        self._filters_customized = True
+        self._filter_site_ids = result["site_ids"]
+        self._filter_types = result["types"]
+        self._filter_status = result["status"]
+        self._filter_category = result["category"]
+        self._filter_tag = result["tag"]
+        self._filter_date_from = result["date_from"]
+        self._filter_date_to = result["date_to"]
+        self._save_filters_config()
+        self.refresh_posts()
 
-    def _refresh_type_options(self) -> None:
-        current = self.query_one("#type-select", Select).value
-        types = list_post_types(self.conn, self._current_site_id())
-        options = [("All types", ALL)]
-        has_posts_or_pages = "post" in types or "page" in types
-        if has_posts_or_pages:
-            options.append(("Posts & Pages", POSTS_AND_PAGES))
-        options += [(t, t) for t in types]
+    def _current_filter_values(
+        self,
+    ) -> tuple[set[int] | None, set[str] | None, str | None, str | None, str | None, str, str]:
+        if not self._filters_customized:
+            return None, None, None, None, None, "", ""
+        return (
+            self._filter_site_ids, self._filter_types, self._filter_status,
+            self._filter_category, self._filter_tag,
+            self._filter_date_from, self._filter_date_to,
+        )
 
-        type_select = self.query_one("#type-select", Select)
-        self._suppress_type_change = True
-        type_select.set_options(options)
-        valid_values = {ALL, *(t for t in types)} | ({POSTS_AND_PAGES} if has_posts_or_pages else set())
-        if self._type_user_selected and current in valid_values:
-            type_select.value = current
+    def _save_filters_config(self) -> None:
+        if self.db_path is None:
+            return
+        id_to_label = {s["id"]: s["label"] for s in list_sites(self.conn)}
+        site_labels = (
+            None if self._filter_site_ids is None
+            else [id_to_label[i] for i in self._filter_site_ids if i in id_to_label]
+        )
+        save_filters(self.db_path, {
+            "site_labels": site_labels,
+            "types": sorted(self._filter_types) if self._filter_types is not None else None,
+            "status": self._filter_status,
+            "category": self._filter_category,
+            "tag": self._filter_tag,
+            "date_from": self._filter_date_from,
+            "date_to": self._filter_date_to,
+        })
+
+    def _load_filters_config(self) -> bool:
+        if self.db_path is None:
+            return False
+        data = load_filters(self.db_path)
+        if data is None:
+            return False
+        label_to_id = {s["label"]: s["id"] for s in list_sites(self.conn)}
+        site_labels = data.get("site_labels")
+        if site_labels is None:
+            self._filter_site_ids = None
         else:
-            # A plugin's internal post types (revisions, attachments, gallery
-            # bookkeeping, ...) usually dwarf actual content and aren't what
-            # anyone wants to browse by default. Until the user picks
-            # something themselves, keep re-evaluating this on every refresh
-            # (site change, or a new site landing mid-import) rather than
-            # locking in whatever was true the first time this ran — during
-            # a progressive import that first pass may briefly see no
-            # posts/pages yet (only plugin bookkeeping rows so far).
-            type_select.value = POSTS_AND_PAGES if has_posts_or_pages else ALL
-        self._suppress_type_change = False
-        self._update_filter_visibility()
-
-    def _refresh_status_options(self) -> None:
-        current = self.query_one("#status-select", Select).value
-        statuses = list_statuses(self.conn, self._current_site_id())
-        status_select = self.query_one("#status-select", Select)
-        status_select.set_options([("All statuses", ALL)] + [(s, s) for s in statuses])
-        valid_values = {ALL, *statuses}
-        status_select.value = current if current in valid_values else ALL
-
-    def _refresh_taxonomy_options(self) -> None:
-        site_id = self._current_site_id()
-        for select_id, taxonomy, label in (
-            ("category-select", "category", "categories"),
-            ("tag-select", "post_tag", "tags"),
-        ):
-            select = self.query_one(f"#{select_id}", Select)
-            current = select.value
-            terms = list_terms(self.conn, site_id, taxonomy)
-            select.set_options([(f"All {label}", ALL)] + [(name, slug) for name, slug in terms])
-            valid_values = {ALL, *(slug for _, slug in terms)}
-            select.value = current if current in valid_values else ALL
-
-    def _update_filter_visibility(self) -> None:
-        show = self.query_one("#type-select", Select).value == POSTS_AND_PAGES
-        self.query_one("#taxonomy-filters", Horizontal).set_class(not show, "hidden")
-        self.query_one("#date-filters", Horizontal).set_class(not show, "hidden")
-
-    @on(Select.Changed, "#site-select")
-    def site_changed(self) -> None:
-        self._refresh_type_options()
-        self._refresh_status_options()
-        self._refresh_taxonomy_options()
-        self.refresh_posts()
-
-    @on(Select.Changed, "#type-select")
-    def type_changed(self) -> None:
-        if not self._suppress_type_change:
-            self._type_user_selected = True
-        self._update_filter_visibility()
-        self.refresh_posts()
-
-    @on(Select.Changed, "#status-select")
-    def status_changed(self) -> None:
-        self.refresh_posts()
-
-    @on(Select.Changed, "#category-select")
-    @on(Select.Changed, "#tag-select")
-    def taxonomy_changed(self) -> None:
-        self.refresh_posts()
-
-    @on(Input.Changed, "#date-from")
-    @on(Input.Changed, "#date-to")
-    def date_changed(self) -> None:
-        if self._date_timer is not None:
-            self._date_timer.stop()
-        self._date_timer = self.set_timer(0.3, self._run_debounced_dates)
-
-    def _run_debounced_dates(self) -> None:
-        self._date_timer = None
-        self.refresh_posts()
-
-    @on(Input.Submitted, "#date-from")
-    @on(Input.Submitted, "#date-to")
-    def date_submitted(self) -> None:
-        if self._date_timer is not None:
-            self._date_timer.stop()
-            self._date_timer = None
-        self.refresh_posts()
+            self._filter_site_ids = {label_to_id[label] for label in site_labels if label in label_to_id} or None
+        types = data.get("types")
+        self._filter_types = set(types) if types else None
+        self._filter_status = data.get("status")
+        self._filter_category = data.get("category")
+        self._filter_tag = data.get("tag")
+        self._filter_date_from = data.get("date_from", "")
+        self._filter_date_to = data.get("date_to", "")
+        self._filters_customized = True
+        return True
 
     @on(Input.Changed, "#search")
     def search_changed(self) -> None:
@@ -581,38 +739,27 @@ class WPReaderApp(App):
         return title
 
     def refresh_posts(self) -> None:
-        site_id = self._current_site_id()
-        type_val = self.query_one("#type-select", Select).value
-        if type_val in (ALL, Select.BLANK, None):
-            post_types = None
-        elif type_val == POSTS_AND_PAGES:
-            post_types = ["post", "page"]
-        else:
-            post_types = [type_val]
+        site_ids, types, status, category, tag, date_from, date_to = self._current_filter_values()
+        if types is None:
+            # No explicit selection yet: default to posts/pages when present
+            # rather than a plugin's internal bookkeeping types, and keep
+            # re-evaluating (a progressive import may not have any yet).
+            available = set(list_post_types(self.conn, list(site_ids) if site_ids else None))
+            types = {t for t in ("post", "page") if t in available} or None
+
         search = self.query_one("#search", Input).value.strip()
-
-        status_val = self.query_one("#status-select", Select).value
-        statuses = None if status_val in (ALL, Select.BLANK, None) else [status_val]
-
-        category = tag = date_from = date_to = None
-        if type_val == POSTS_AND_PAGES:
-            category_val = self.query_one("#category-select", Select).value
-            category = None if category_val in (ALL, Select.BLANK, None) else category_val
-            tag_val = self.query_one("#tag-select", Select).value
-            tag = None if tag_val in (ALL, Select.BLANK, None) else tag_val
-            date_from = self.query_one("#date-from", Input).value.strip() or None
-            date_to = self.query_one("#date-to", Input).value.strip() or None
+        statuses = [status] if status else None
 
         rows = query_posts(
             self.conn,
-            site_id=site_id,
-            post_types=post_types,
+            site_ids=list(site_ids) if site_ids else None,
+            post_types=list(types) if types else None,
             statuses=statuses,
             search=(search + "*") if search else None,
             category=category,
             tag=tag,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=date_from or None,
+            date_to=date_to or None,
         )
         table = self.query_one("#post-table", DataTable)
         table.clear()
@@ -721,8 +868,15 @@ class WPReaderApp(App):
         if not self._highlighted_matches:
             self.notify("No highlighted search matches to copy.", severity="warning")
             return
-        self.copy_to_clipboard("\n".join(self._highlighted_matches))
+        self._copy_to_clipboard("\n".join(self._highlighted_matches))
         self.notify(f"Copied {len(self._highlighted_matches)} highlighted match(es) to clipboard.")
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        # Prefer a real clipboard tool: some terminals/multiplexers ignore
+        # the OSC 52 escape sequence that Textual's own copy_to_clipboard
+        # relies on, which makes copying silently do nothing.
+        if not copy_via_external_tool(text):
+            self.copy_to_clipboard(text)
 
     def action_export_html(self) -> None:
         if self.current_post:
