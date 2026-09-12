@@ -25,7 +25,9 @@ from .content import (
 from .export import build_media_refs, default_filename, export_html, export_markdown
 from .db import connect as connect_db
 from .importer import file_fingerprint, import_all_parallel, needs_import, shard_db_paths
-from .models import PostRecord, list_post_types, list_sites, list_terms, load_post, query_posts
+from .models import (
+    PostRecord, list_post_types, list_sites, list_statuses, list_terms, load_post, query_posts,
+)
 
 ALL = "__all__"
 POSTS_AND_PAGES = "__posts_and_pages__"
@@ -220,6 +222,7 @@ class WPReaderApp(App):
         ("e", "export_html", "Export HTML"),
         ("m", "export_markdown", "Export Markdown"),
         ("y", "copy_highlights", "Copy highlights"),
+        ("d", "toggle_date_in_title", "Toggle date in title"),
         ("escape", "clear_search", "Clear search"),
         ("q", "quit", "Quit"),
     ]
@@ -245,6 +248,7 @@ class WPReaderApp(App):
         self._search_timer: Timer | None = None
         self._date_timer: Timer | None = None
         self._highlighted_matches: list[str] = []
+        self._show_date_in_title = True
         self._known_site_count = 0
         self._type_user_selected = False
         self._suppress_type_change = False
@@ -266,12 +270,13 @@ class WPReaderApp(App):
                     with Horizontal(classes="filter-row"):
                         yield Select([], id="site-select", prompt="Site")
                         yield Select([], id="type-select", prompt="Type")
+                        yield Select([], id="status-select", prompt="Status")
                     with Horizontal(id="taxonomy-filters", classes="filter-row hidden"):
                         yield Select([], id="category-select", prompt="Category")
                         yield Select([], id="tag-select", prompt="Tag")
                     with Horizontal(id="date-filters", classes="filter-row hidden"):
-                        yield Input(placeholder="From (YYYY-MM-DD)", id="date-from")
-                        yield Input(placeholder="To (YYYY-MM-DD)", id="date-to")
+                        yield Input(placeholder="From (YYYY[-MM[-DD]])", id="date-from")
+                        yield Input(placeholder="To (YYYY[-MM[-DD]])", id="date-to")
                 yield Input(placeholder="Search title/content... (press /)", id="search")
                 yield DataTable(id="post-table", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="detail"):
@@ -280,11 +285,11 @@ class WPReaderApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#post-table", DataTable)
-        table.add_columns("Title", "Type", "Status", "Date")
+        self._configure_table_columns()
 
         self._refresh_site_options()
         self._refresh_type_options()
+        self._refresh_status_options()
         self._refresh_taxonomy_options()
         self.refresh_posts()
 
@@ -385,6 +390,7 @@ class WPReaderApp(App):
             self._known_site_count = site_count
             self._refresh_site_options()
             self._refresh_type_options()
+            self._refresh_status_options()
             self._refresh_taxonomy_options()
             self.refresh_posts()
 
@@ -401,6 +407,7 @@ class WPReaderApp(App):
         self.query_one("#import-status", Horizontal).add_class("hidden")
         self._refresh_site_options()
         self._refresh_type_options()
+        self._refresh_status_options()
         self._refresh_taxonomy_options()
         self.refresh_posts()
         if errors:
@@ -452,6 +459,14 @@ class WPReaderApp(App):
         self._suppress_type_change = False
         self._update_filter_visibility()
 
+    def _refresh_status_options(self) -> None:
+        current = self.query_one("#status-select", Select).value
+        statuses = list_statuses(self.conn, self._current_site_id())
+        status_select = self.query_one("#status-select", Select)
+        status_select.set_options([("All statuses", ALL)] + [(s, s) for s in statuses])
+        valid_values = {ALL, *statuses}
+        status_select.value = current if current in valid_values else ALL
+
     def _refresh_taxonomy_options(self) -> None:
         site_id = self._current_site_id()
         for select_id, taxonomy, label in (
@@ -473,6 +488,7 @@ class WPReaderApp(App):
     @on(Select.Changed, "#site-select")
     def site_changed(self) -> None:
         self._refresh_type_options()
+        self._refresh_status_options()
         self._refresh_taxonomy_options()
         self.refresh_posts()
 
@@ -481,6 +497,10 @@ class WPReaderApp(App):
         if not self._suppress_type_change:
             self._type_user_selected = True
         self._update_filter_visibility()
+        self.refresh_posts()
+
+    @on(Select.Changed, "#status-select")
+    def status_changed(self) -> None:
         self.refresh_posts()
 
     @on(Select.Changed, "#category-select")
@@ -527,6 +547,25 @@ class WPReaderApp(App):
             self._search_timer = None
         self.refresh_posts()
 
+    def _configure_table_columns(self) -> None:
+        table = self.query_one("#post-table", DataTable)
+        table.clear(columns=True)
+        if self._show_date_in_title:
+            # Drop the separate Type/Status/Date columns so Title gets the
+            # full row width — otherwise a long title truncates before the
+            # date concatenated onto its end ever becomes visible.
+            table.add_columns("Title")
+        else:
+            table.add_columns("Title", "Type", "Status", "Date")
+
+    def _title_cell(self, row: sqlite3.Row) -> str:
+        title = (row["post_title"] or "").strip() or f"(untitled #{row['wp_id']})"
+        if self._show_date_in_title:
+            date = (row["post_date"] or "")[:10]
+            if date:
+                title = f"{date}  —  {title}"
+        return title
+
     def refresh_posts(self) -> None:
         site_id = self._current_site_id()
         type_val = self.query_one("#type-select", Select).value
@@ -537,6 +576,9 @@ class WPReaderApp(App):
         else:
             post_types = [type_val]
         search = self.query_one("#search", Input).value.strip()
+
+        status_val = self.query_one("#status-select", Select).value
+        statuses = None if status_val in (ALL, Select.BLANK, None) else [status_val]
 
         category = tag = date_from = date_to = None
         if type_val == POSTS_AND_PAGES:
@@ -551,6 +593,7 @@ class WPReaderApp(App):
             self.conn,
             site_id=site_id,
             post_types=post_types,
+            statuses=statuses,
             search=(search + "*") if search else None,
             category=category,
             tag=tag,
@@ -562,13 +605,13 @@ class WPReaderApp(App):
         self._row_ids = [r["id"] for r in rows]
         # add_rows (bulk) rather than one add_row() call per post: with tens
         # of thousands of rows the per-row version visibly blocks the UI.
-        table.add_rows(
-            (
-                (r["post_title"] or "").strip() or f"(untitled #{r['wp_id']})",
-                r["post_type"], r["post_status"], (r["post_date"] or "")[:10],
+        if self._show_date_in_title:
+            table.add_rows((self._title_cell(r),) for r in rows)
+        else:
+            table.add_rows(
+                (self._title_cell(r), r["post_type"], r["post_status"], (r["post_date"] or "")[:10])
+                for r in rows
             )
-            for r in rows
-        )
         if rows:
             table.move_cursor(row=0)
             self.show_post(self._row_ids[0])
@@ -647,6 +690,18 @@ class WPReaderApp(App):
             search.value = ""
         else:
             self.query_one("#post-table", DataTable).focus()
+
+    def action_toggle_date_in_title(self) -> None:
+        table = self.query_one("#post-table", DataTable)
+        cursor_row = table.cursor_row
+        self._show_date_in_title = not self._show_date_in_title
+        self._configure_table_columns()
+        self.refresh_posts()
+        # refresh_posts() re-queries with the same filters, so row order is
+        # unchanged; restore the prior selection instead of jumping to the
+        # top just because the title text changed.
+        if cursor_row is not None and 0 <= cursor_row < len(self._row_ids):
+            table.move_cursor(row=cursor_row)
 
     def action_copy_highlights(self) -> None:
         if not self._highlighted_matches:

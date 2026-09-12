@@ -1,8 +1,10 @@
 """Query helpers that assemble a post together with all of its metadata."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import calendar
+import re
 import sqlite3
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -58,6 +60,19 @@ def list_post_types(conn: sqlite3.Connection, site_id: int | None) -> list[str]:
     return [r["post_type"] for r in rows]
 
 
+def list_statuses(conn: sqlite3.Connection, site_id: int | None) -> list[str]:
+    if site_id is None:
+        rows = conn.execute(
+            "SELECT DISTINCT post_status FROM posts ORDER BY post_status"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT post_status FROM posts WHERE site_id=? ORDER BY post_status",
+            (site_id,),
+        ).fetchall()
+    return [r["post_status"] for r in rows]
+
+
 def list_terms(conn: sqlite3.Connection, site_id: int | None, taxonomy: str) -> list[tuple[str, str]]:
     """Distinct (name, slug) pairs for a taxonomy, for populating a filter dropdown."""
     if site_id is None:
@@ -79,6 +94,33 @@ def list_terms(conn: sqlite3.Connection, site_id: int | None, taxonomy: str) -> 
             (site_id, taxonomy),
         ).fetchall()
     return [(r["name"], r["slug"]) for r in rows]
+
+
+_PARTIAL_DATE_RE = re.compile(r"^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$")
+
+
+def resolve_date_bound(value: str, *, end: bool) -> str | None:
+    """Expand a possibly-partial date ("2012", "2012-12", or "2012-12-15")
+    into a full "YYYY-MM-DD HH:MM:SS" bound. ``end`` picks the last vs. first
+    instant of whatever period the given precision implies, so "2012" as a
+    lower bound starts at Jan 1 and as an upper bound reaches Dec 31."""
+    value = value.strip()
+    if not value:
+        return None
+    m = _PARTIAL_DATE_RE.match(value)
+    if not m:
+        return None
+    year = int(m.group(1))
+    month = int(m.group(2)) if m.group(2) else None
+    day = int(m.group(3)) if m.group(3) else None
+
+    if month is None:
+        month, day = (12, 31) if end else (1, 1)
+    elif day is None:
+        day = calendar.monthrange(year, month)[1] if end else 1
+
+    time_part = "23:59:59" if end else "00:00:00"
+    return f"{year:04d}-{month:02d}-{day:02d} {time_part}"
 
 
 def query_posts(
@@ -124,12 +166,21 @@ def query_posts(
                 "AND tt.taxonomy = ? AND te.slug = ?)"
             )
             params.extend([taxonomy, slug])
-    if date_from:
-        clauses.append("p.post_date >= ?")
-        params.append(date_from)
-    if date_to:
-        clauses.append("p.post_date <= ?")
-        params.append(date_to + " 23:59:59")
+    # A lone value in either field pins to just that period (e.g. "2018" ->
+    # all of 2018) rather than leaving the other side unbounded; filling in
+    # both with different values gives a genuine range.
+    effective_from = date_from or date_to
+    effective_to = date_to or date_from
+    if effective_from:
+        resolved = resolve_date_bound(effective_from, end=False)
+        if resolved:
+            clauses.append("p.post_date >= ?")
+            params.append(resolved)
+    if effective_to:
+        resolved = resolve_date_bound(effective_to, end=True)
+        if resolved:
+            clauses.append("p.post_date <= ?")
+            params.append(resolved)
 
     sql = base + ("" if not clauses else " AND " + " AND ".join(clauses))
     sql += " ORDER BY p.post_date DESC"
