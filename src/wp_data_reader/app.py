@@ -59,6 +59,13 @@ class ExportModal(ModalScreen[None]):
         background: $panel;
         padding: 1 2;
     }
+    #export-actions {
+        height: auto;
+        margin-top: 1;
+    }
+    #export-actions Button {
+        margin-right: 1;
+    }
     """
 
     def __init__(self, conn: sqlite3.Connection, post: PostRecord, fmt: str) -> None:
@@ -72,20 +79,27 @@ class ExportModal(ModalScreen[None]):
         with Vertical(id="export-box"):
             yield Label(f"Export '{self.post.display_title}' as {self.fmt.upper()}")
             yield Input(value=default_path, id="export-path")
-            yield Static("[Enter] save   [Escape] cancel", classes="hint")
+            with Horizontal(id="export-actions"):
+                yield Button("Save", id="export-save", variant="primary")
+                yield Button("Cancel", id="export-cancel")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
 
-    @on(Input.Submitted)
-    def do_export(self, event: Input.Submitted) -> None:
-        dest = Path(event.value.strip()).expanduser()
+    @on(Input.Submitted, "#export-path")
+    @on(Button.Pressed, "#export-save")
+    def do_export(self) -> None:
+        dest = Path(self.query_one("#export-path", Input).value.strip()).expanduser()
         refs = build_media_refs(self.conn, self.post)
         if self.fmt == "html":
             export_html(self.post, refs, dest)
         else:
             export_markdown(self.post, refs, dest)
         self.app.notify(f"Exported to {dest}")
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#export-cancel")
+    def cancel_pressed(self) -> None:
         self.dismiss(None)
 
     def on_key(self, event) -> None:
