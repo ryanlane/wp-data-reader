@@ -32,12 +32,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Max dump files to import in parallel (default: one process per "
              "CPU core, capped at the number of files).",
     )
+    parser.add_argument(
+        "--uploads-dir", type=Path, default=None,
+        help="Local directory mirroring wp-content/uploads (e.g. from a "
+             "recovered backup), used to open image/media links against a "
+             "local file instead of the original (possibly dead) site. "
+             "Remembered for this dump set after the first run.",
+    )
     args = parser.parse_args(argv)
 
     for p in args.dumps:
         if not p.is_file():
             print(f"error: not a file: {p}", file=sys.stderr)
             return 1
+    if args.uploads_dir is not None and not args.uploads_dir.is_dir():
+        print(f"error: not a directory: {args.uploads_dir}", file=sys.stderr)
+        return 1
 
     db_path = args.db or (args.dumps[0].parent / ".wp_data_reader_cache.sqlite3")
     # Creates the schema (and enables WAL) up front, synchronously, before
@@ -46,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     ensure_fts_backfilled(conn)
 
     app = WPReaderApp(conn, db_path=db_path, dump_paths=args.dumps,
-                       force_reimport=args.rebuild, max_workers=args.jobs)
+                       force_reimport=args.rebuild, max_workers=args.jobs,
+                       uploads_dir=args.uploads_dir)
     app.run()
     conn.close()
     return 0

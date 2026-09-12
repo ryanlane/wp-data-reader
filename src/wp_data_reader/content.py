@@ -4,6 +4,7 @@ filenames WordPress actually stored in wp-content/uploads."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 from bs4 import BeautifulSoup, NavigableString
@@ -105,7 +106,7 @@ def apply_highlight_markers(markdown_text: str) -> str:
 
 _SIZE_SUFFIX_RE = re.compile(r"-\d+x\d+(?=\.\w+$)")
 _UPLOADS_SRC_RE = re.compile(
-    r"""(?:src|href)=["']([^"']*wp-content/uploads/([^"']+))["']""",
+    r"""(?P<attr>src|href)=["'](?P<url>[^"']*wp-content/uploads/(?P<rel>[^"']+))["']""",
     re.IGNORECASE,
 )
 _SINGLEPIC_RE = re.compile(r"\[singlepic\s+id=(\d+)[^\]]*\]", re.IGNORECASE)
@@ -203,7 +204,7 @@ class MediaIndex:
 def find_media_refs(content: str, index: MediaIndex) -> list[MediaRef]:
     refs: list[MediaRef] = []
     for m in _UPLOADS_SRC_RE.finditer(content):
-        refs.append(index.resolve_upload_ref(m.group(2)))
+        refs.append(index.resolve_upload_ref(m.group("rel")))
     for m in _SINGLEPIC_RE.finditer(content):
         refs.append(index.resolve_singlepic(int(m.group(1))))
     for m in _NGGALLERY_RE.finditer(content):
@@ -212,3 +213,38 @@ def find_media_refs(content: str, index: MediaIndex) -> list[MediaRef]:
         ids = [int(x) for x in re.findall(r"\d+", m.group(1))]
         refs.extend(index.resolve_gallery_ids(ids))
     return refs
+
+
+def local_upload_path(ref_path: str, uploads_dir: Path, index: MediaIndex | None) -> Path | None:
+    """Resolve a wp-content/uploads-relative reference to a file that
+    actually exists under ``uploads_dir`` — preferring the originally-stored
+    filename (undoing WordPress's ``-WIDTHxHEIGHT`` resize suffix via
+    ``index``, since a recovered backup may only have kept full-size
+    originals) and falling back to the path exactly as referenced (since it
+    may instead only have the resized variants)."""
+    candidates = []
+    if index is not None:
+        resolved = index.resolve_upload_ref(ref_path).resolved_path
+        if resolved:
+            candidates.append(resolved)
+    candidates.append(ref_path.lstrip("/"))
+    for rel in candidates:
+        path = uploads_dir / rel
+        if path.is_file():
+            return path
+    return None
+
+
+def rewrite_uploads_links(html: str, uploads_dir: Path, index: MediaIndex | None) -> str:
+    """Rewrite ``src``/``href`` attributes referencing wp-content/uploads to
+    a ``file://`` URL under ``uploads_dir``, wherever that file actually
+    exists locally. Anything that doesn't resolve is left untouched, so a
+    dead link just stays a dead link rather than becoming a broken local
+    one."""
+    def _sub(m: re.Match) -> str:
+        local = local_upload_path(m.group("rel"), uploads_dir, index)
+        if local is None:
+            return m.group(0)
+        return f'{m.group("attr")}="{local.as_uri()}"'
+
+    return _UPLOADS_SRC_RE.sub(_sub, html)

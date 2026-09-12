@@ -20,10 +20,10 @@ from textual.widgets import (
 )
 
 from .clipboard import copy_via_external_tool
-from .config import load_filters, save_filters
+from .config import load_settings, save_settings
 from .content import (
-    apply_highlight_markers, extract_search_terms, highlight_html,
-    html_to_markdown, prepare_html,
+    MediaIndex, apply_highlight_markers, extract_search_terms, highlight_html,
+    html_to_markdown, prepare_html, rewrite_uploads_links,
 )
 from .export import build_media_refs, default_filename, export_html, export_markdown
 from .db import connect as connect_db
@@ -93,10 +93,12 @@ class ExportModal(ModalScreen[None]):
     def do_export(self) -> None:
         dest = Path(self.query_one("#export-path", Input).value.strip()).expanduser()
         refs = build_media_refs(self.conn, self.post)
+        uploads_dir = self.app.uploads_dir  # type: ignore[attr-defined]
+        media_index = MediaIndex(self.conn, self.post.site_id) if uploads_dir is not None else None
         if self.fmt == "html":
-            export_html(self.post, refs, dest)
+            export_html(self.post, refs, dest, uploads_dir=uploads_dir, media_index=media_index)
         else:
-            export_markdown(self.post, refs, dest)
+            export_markdown(self.post, refs, dest, uploads_dir=uploads_dir, media_index=media_index)
         self.app.notify(f"Exported to {dest}")
         self.dismiss(None)
 
@@ -432,6 +434,7 @@ class WPReaderApp(App):
         dump_paths: list[Path] | None = None,
         force_reimport: bool = False,
         max_workers: int | None = None,
+        uploads_dir: Path | None = None,
     ) -> None:
         super().__init__()
         self.conn = conn
@@ -439,6 +442,8 @@ class WPReaderApp(App):
         self.dump_paths = dump_paths or []
         self.force_reimport = force_reimport
         self.max_workers = max_workers
+        self.uploads_dir = uploads_dir
+        self._media_index_cache: dict[int, MediaIndex] = {}
         self.current_post: PostRecord | None = None
         self._progress_timer: Timer | None = None
         self._spinner_timer: Timer | None = None
@@ -485,6 +490,7 @@ class WPReaderApp(App):
             if self.force_reimport or needs_import(self.conn, p)
         ]
 
+        self._sync_uploads_dir_config()
         loaded_saved_filters = self._load_filters_config()
         self.refresh_posts()
 
@@ -584,6 +590,7 @@ class WPReaderApp(App):
         site_count = self.conn.execute("SELECT count(*) c FROM sites").fetchone()["c"]
         if site_count != self._known_site_count:
             self._known_site_count = site_count
+            self._media_index_cache.clear()
             self.refresh_posts()
 
     def _finish_import(self, errors: list[str]) -> None:
@@ -597,6 +604,7 @@ class WPReaderApp(App):
             self._spinner_timer.stop()
             self._spinner_timer = None
         self.query_one("#import-status", Horizontal).add_class("hidden")
+        self._media_index_cache.clear()
         self.refresh_posts()
         if errors:
             self.notify("Import finished with errors:\n" + "\n".join(errors), severity="error", timeout=10)
@@ -667,21 +675,22 @@ class WPReaderApp(App):
             None if self._filter_site_ids is None
             else [id_to_label[i] for i in self._filter_site_ids if i in id_to_label]
         )
-        save_filters(self.db_path, {
-            "site_labels": site_labels,
-            "types": sorted(self._filter_types) if self._filter_types is not None else None,
-            "status": self._filter_status,
-            "category": self._filter_category,
-            "tag": self._filter_tag,
-            "date_from": self._filter_date_from,
-            "date_to": self._filter_date_to,
-        })
+        save_settings(
+            self.db_path,
+            site_labels=site_labels,
+            types=sorted(self._filter_types) if self._filter_types is not None else None,
+            status=self._filter_status,
+            category=self._filter_category,
+            tag=self._filter_tag,
+            date_from=self._filter_date_from,
+            date_to=self._filter_date_to,
+        )
 
     def _load_filters_config(self) -> bool:
         if self.db_path is None:
             return False
-        data = load_filters(self.db_path)
-        if data is None:
+        data = load_settings(self.db_path)
+        if "types" not in data:
             return False
         label_to_id = {s["label"]: s["id"] for s in list_sites(self.conn)}
         site_labels = data.get("site_labels")
@@ -698,6 +707,18 @@ class WPReaderApp(App):
         self._filter_date_to = data.get("date_to", "")
         self._filters_customized = True
         return True
+
+    def _sync_uploads_dir_config(self) -> None:
+        """A path given on the command line is remembered for next time;
+        otherwise fall back to whatever was remembered before."""
+        if self.db_path is None:
+            return
+        if self.uploads_dir is not None:
+            save_settings(self.db_path, uploads_dir=str(self.uploads_dir))
+        else:
+            saved = load_settings(self.db_path).get("uploads_dir")
+            if saved:
+                self.uploads_dir = Path(saved)
 
     @on(Input.Changed, "#search")
     def search_changed(self) -> None:
@@ -787,11 +808,20 @@ class WPReaderApp(App):
             return
         self.show_post(self._row_ids[event.cursor_row])
 
+    def _media_index_for(self, site_id: int) -> MediaIndex:
+        index = self._media_index_cache.get(site_id)
+        if index is None:
+            index = MediaIndex(self.conn, site_id)
+            self._media_index_cache[site_id] = index
+        return index
+
     def show_post(self, row_id: int) -> None:
         post = load_post(self.conn, row_id)
         self.current_post = post
         self.query_one("#meta-panel", Static).update(self._meta_panel(post))
         html = prepare_html(post.content)
+        if self.uploads_dir is not None:
+            html = rewrite_uploads_links(html, self.uploads_dir, self._media_index_for(post.site_id))
         search = self.query_one("#search", Input).value.strip()
         terms = extract_search_terms(search)
         self._highlighted_matches = []

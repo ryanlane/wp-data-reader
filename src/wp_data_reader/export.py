@@ -4,7 +4,7 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from .content import MediaRef, find_media_refs, html_to_markdown, prepare_html
+from .content import MediaIndex, MediaRef, find_media_refs, html_to_markdown, prepare_html, rewrite_uploads_links
 from .models import PostRecord
 
 _HTML_TEMPLATE = """<!doctype html>
@@ -81,8 +81,13 @@ def _media_markdown(refs: list[MediaRef]) -> str:
     return "\n".join(lines)
 
 
-def export_html(post: PostRecord, media_refs: list[MediaRef], dest: Path) -> Path:
+def export_html(
+    post: PostRecord, media_refs: list[MediaRef], dest: Path,
+    *, uploads_dir: Path | None = None, media_index: MediaIndex | None = None,
+) -> Path:
     html_body = prepare_html(post.content)
+    if uploads_dir is not None:
+        html_body = rewrite_uploads_links(html_body, uploads_dir, media_index)
     doc = _HTML_TEMPLATE.format(
         title=escape(post.display_title),
         meta_rows=_meta_rows(post),
@@ -93,7 +98,10 @@ def export_html(post: PostRecord, media_refs: list[MediaRef], dest: Path) -> Pat
     return dest
 
 
-def export_markdown(post: PostRecord, media_refs: list[MediaRef], dest: Path) -> Path:
+def export_markdown(
+    post: PostRecord, media_refs: list[MediaRef], dest: Path,
+    *, uploads_dir: Path | None = None, media_index: MediaIndex | None = None,
+) -> Path:
     front_matter = [
         "---",
         f"title: {post.display_title!r}",
@@ -113,7 +121,10 @@ def export_markdown(post: PostRecord, media_refs: list[MediaRef], dest: Path) ->
         front_matter.append(f"tags: {tags!r}")
     front_matter.append("---\n")
 
-    body = html_to_markdown(prepare_html(post.content))
+    body_html = prepare_html(post.content)
+    if uploads_dir is not None:
+        body_html = rewrite_uploads_links(body_html, uploads_dir, media_index)
+    body = html_to_markdown(body_html)
     doc = "\n".join(front_matter) + f"\n# {post.display_title}\n\n{body}\n" + _media_markdown(media_refs)
     dest.write_text(doc, encoding="utf-8")
     return dest

@@ -30,6 +30,21 @@ A single dump file can contain more than one WordPress install if it uses
 multiple table prefixes (e.g. `wp_`, `AT_`); each prefix is treated as its
 own "site" and can be selected independently in the UI.
 
+If the site the dump came from is no longer online, image/media links in
+post content will 404. If you have a local copy of `wp-content/uploads`
+(e.g. from a backup), point `--uploads-dir` at it and any link whose file
+exists there opens (or copies) a `file://` URL to it instead of the
+original, dead one — matched using the same original-filename resolution
+the export media appendix uses, so a resized reference like
+`IMG_4354-550x412.jpg` still finds `IMG_4354.jpg` if that's what you have:
+
+```sh
+uv run wp-data-reader path/to/dump.sql --uploads-dir path/to/wp-content/uploads
+```
+
+Remembered next to the cache after the first run, so later runs don't need
+the flag repeated.
+
 ## In the TUI
 
 - `/` — focus the search box (full-text search over title/content/excerpt,
@@ -114,5 +129,5 @@ selection.
   (replicating WordPress's `wpautop` for classic-editor content), converts
   it to Markdown for display/export, and resolves embedded media.
 - `app.py` — the Textual TUI.
-- `config.py` — reads/writes the saved Filters selection
-  (`<cache>.filters.json`, next to the SQLite cache).
+- `config.py` — reads/writes saved settings (Filters selection,
+  `--uploads-dir`) in `<cache>.filters.json`, next to the SQLite cache.
