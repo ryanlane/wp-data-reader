@@ -35,14 +35,29 @@ own "site" and can be selected independently in the UI.
 - `/` — focus the search box (full-text search over title/content/excerpt,
   debounced so fast typing doesn't re-query on every keystroke); matches are
   highlighted in the content view
-- Site / Type dropdowns — narrow the list to one imported site and/or post
-  type. Type defaults to "Posts & Pages", since a WordPress install's
-  `posts` table is usually mostly revisions and plugin bookkeeping rows —
-  pick "All types" to see those too
+- Site / Type / Status dropdowns — narrow the list to one imported site,
+  post type, and/or status (publish, draft, pending, private, ...). Type
+  defaults to "Posts & Pages", since a WordPress install's `posts` table is
+  usually mostly revisions and plugin bookkeeping rows — pick "All types"
+  to see those too
+- With Type set to "Posts & Pages", two more filter rows appear:
+  - Category / Tag dropdowns, populated from that taxonomy's terms on the
+    selected site
+  - From / To date fields, accepting `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`.
+    Filling in just one field matches only that period (e.g. `2018` alone
+    shows everything from 2018; `2018-02-08` alone shows just that day).
+    Filling in both gives a range (e.g. `2012-12` to `2013-02` covers
+    December 2012 through February 2013)
+- `d` — toggle showing the date before the title in the list (on by
+  default) and collapse the Type/Status/Date columns, so the date is
+  visible without needing a very wide window
+- `y` — copy the currently highlighted search matches to the clipboard
 - Clicking a link in the content view asks whether to open it in your
   browser or copy the URL, rather than opening it immediately
 - `e` — export the selected post/page as a standalone HTML file
 - `m` — export the selected post/page as Markdown (with YAML front matter)
+  — the export dialog's Save/Cancel buttons support both mouse clicks and
+  Tab/Shift+Tab to move focus between the path field and the buttons
 - `q` — quit
 
 Exports include an "embedded media" appendix that resolves images and
