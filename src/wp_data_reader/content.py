@@ -70,22 +70,29 @@ def extract_search_terms(query: str) -> list[str]:
     return [w for w in words if len(w) > 1 and w.lower() not in _FTS_STOPWORDS]
 
 
-def highlight_html(html: str, terms: list[str]) -> str:
+def highlight_html(html: str, terms: list[str]) -> tuple[str, list[str]]:
     """Wrap matches of ``terms`` (case-insensitive) in text nodes with
-    sentinel markers, leaving tags/attributes untouched."""
+    sentinel markers, leaving tags/attributes untouched. Also returns the
+    distinct matched substrings (original casing, document order) so callers
+    can offer to copy them without a second pass over the content."""
     if not terms:
-        return html
+        return html, []
     pattern = re.compile("(" + "|".join(re.escape(t) for t in terms) + ")", re.IGNORECASE)
     soup = BeautifulSoup(html, "html.parser")
+    matches: dict[str, None] = {}
+
+    def _sub(m: re.Match) -> str:
+        matches.setdefault(m.group(0), None)
+        return f"{_HL_START}{m.group(0)}{_HL_END}"
+
     for node in soup.find_all(string=True):
         if node.parent and node.parent.name in ("script", "style"):
             continue
         text = str(node)
         if not pattern.search(text):
             continue
-        new_text = pattern.sub(lambda m: f"{_HL_START}{m.group(0)}{_HL_END}", text)
-        node.replace_with(NavigableString(new_text))
-    return str(soup)
+        node.replace_with(NavigableString(pattern.sub(_sub, text)))
+    return str(soup), list(matches.keys())
 
 
 def apply_highlight_markers(markdown_text: str) -> str:

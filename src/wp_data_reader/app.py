@@ -25,7 +25,7 @@ from .content import (
 from .export import build_media_refs, default_filename, export_html, export_markdown
 from .db import connect as connect_db
 from .importer import file_fingerprint, import_all_parallel, needs_import, shard_db_paths
-from .models import PostRecord, list_post_types, list_sites, load_post, query_posts
+from .models import PostRecord, list_post_types, list_sites, list_terms, load_post, query_posts
 
 ALL = "__all__"
 POSTS_AND_PAGES = "__posts_and_pages__"
@@ -175,6 +175,12 @@ class WPReaderApp(App):
         height: auto;
         padding: 0 1;
     }
+    #filters .filter-row {
+        height: auto;
+    }
+    #filters .filter-row.hidden {
+        display: none;
+    }
     #detail {
         padding: 1 2;
     }
@@ -213,6 +219,7 @@ class WPReaderApp(App):
         ("/", "focus_search", "Search"),
         ("e", "export_html", "Export HTML"),
         ("m", "export_markdown", "Export Markdown"),
+        ("y", "copy_highlights", "Copy highlights"),
         ("escape", "clear_search", "Clear search"),
         ("q", "quit", "Quit"),
     ]
@@ -236,6 +243,8 @@ class WPReaderApp(App):
         self._spinner_timer: Timer | None = None
         self._spinner_index = 0
         self._search_timer: Timer | None = None
+        self._date_timer: Timer | None = None
+        self._highlighted_matches: list[str] = []
         self._known_site_count = 0
         self._type_user_selected = False
         self._suppress_type_change = False
@@ -253,9 +262,16 @@ class WPReaderApp(App):
             yield ProgressBar(id="import-bar", total=100, show_eta=False)
         with Horizontal():
             with Vertical(id="sidebar"):
-                with Horizontal(id="filters"):
-                    yield Select([], id="site-select", prompt="Site")
-                    yield Select([], id="type-select", prompt="Type")
+                with Vertical(id="filters"):
+                    with Horizontal(classes="filter-row"):
+                        yield Select([], id="site-select", prompt="Site")
+                        yield Select([], id="type-select", prompt="Type")
+                    with Horizontal(id="taxonomy-filters", classes="filter-row hidden"):
+                        yield Select([], id="category-select", prompt="Category")
+                        yield Select([], id="tag-select", prompt="Tag")
+                    with Horizontal(id="date-filters", classes="filter-row hidden"):
+                        yield Input(placeholder="From (YYYY-MM-DD)", id="date-from")
+                        yield Input(placeholder="To (YYYY-MM-DD)", id="date-to")
                 yield Input(placeholder="Search title/content... (press /)", id="search")
                 yield DataTable(id="post-table", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="detail"):
@@ -269,6 +285,7 @@ class WPReaderApp(App):
 
         self._refresh_site_options()
         self._refresh_type_options()
+        self._refresh_taxonomy_options()
         self.refresh_posts()
 
         files_to_import = [
@@ -368,6 +385,7 @@ class WPReaderApp(App):
             self._known_site_count = site_count
             self._refresh_site_options()
             self._refresh_type_options()
+            self._refresh_taxonomy_options()
             self.refresh_posts()
 
     def _finish_import(self, errors: list[str]) -> None:
@@ -383,6 +401,7 @@ class WPReaderApp(App):
         self.query_one("#import-status", Horizontal).add_class("hidden")
         self._refresh_site_options()
         self._refresh_type_options()
+        self._refresh_taxonomy_options()
         self.refresh_posts()
         if errors:
             self.notify("Import finished with errors:\n" + "\n".join(errors), severity="error", timeout=10)
@@ -431,16 +450,61 @@ class WPReaderApp(App):
             # posts/pages yet (only plugin bookkeeping rows so far).
             type_select.value = POSTS_AND_PAGES if has_posts_or_pages else ALL
         self._suppress_type_change = False
+        self._update_filter_visibility()
+
+    def _refresh_taxonomy_options(self) -> None:
+        site_id = self._current_site_id()
+        for select_id, taxonomy, label in (
+            ("category-select", "category", "categories"),
+            ("tag-select", "post_tag", "tags"),
+        ):
+            select = self.query_one(f"#{select_id}", Select)
+            current = select.value
+            terms = list_terms(self.conn, site_id, taxonomy)
+            select.set_options([(f"All {label}", ALL)] + [(name, slug) for name, slug in terms])
+            valid_values = {ALL, *(slug for _, slug in terms)}
+            select.value = current if current in valid_values else ALL
+
+    def _update_filter_visibility(self) -> None:
+        show = self.query_one("#type-select", Select).value == POSTS_AND_PAGES
+        self.query_one("#taxonomy-filters", Horizontal).set_class(not show, "hidden")
+        self.query_one("#date-filters", Horizontal).set_class(not show, "hidden")
 
     @on(Select.Changed, "#site-select")
     def site_changed(self) -> None:
         self._refresh_type_options()
+        self._refresh_taxonomy_options()
         self.refresh_posts()
 
     @on(Select.Changed, "#type-select")
     def type_changed(self) -> None:
         if not self._suppress_type_change:
             self._type_user_selected = True
+        self._update_filter_visibility()
+        self.refresh_posts()
+
+    @on(Select.Changed, "#category-select")
+    @on(Select.Changed, "#tag-select")
+    def taxonomy_changed(self) -> None:
+        self.refresh_posts()
+
+    @on(Input.Changed, "#date-from")
+    @on(Input.Changed, "#date-to")
+    def date_changed(self) -> None:
+        if self._date_timer is not None:
+            self._date_timer.stop()
+        self._date_timer = self.set_timer(0.3, self._run_debounced_dates)
+
+    def _run_debounced_dates(self) -> None:
+        self._date_timer = None
+        self.refresh_posts()
+
+    @on(Input.Submitted, "#date-from")
+    @on(Input.Submitted, "#date-to")
+    def date_submitted(self) -> None:
+        if self._date_timer is not None:
+            self._date_timer.stop()
+            self._date_timer = None
         self.refresh_posts()
 
     @on(Input.Changed, "#search")
@@ -474,11 +538,24 @@ class WPReaderApp(App):
             post_types = [type_val]
         search = self.query_one("#search", Input).value.strip()
 
+        category = tag = date_from = date_to = None
+        if type_val == POSTS_AND_PAGES:
+            category_val = self.query_one("#category-select", Select).value
+            category = None if category_val in (ALL, Select.BLANK, None) else category_val
+            tag_val = self.query_one("#tag-select", Select).value
+            tag = None if tag_val in (ALL, Select.BLANK, None) else tag_val
+            date_from = self.query_one("#date-from", Input).value.strip() or None
+            date_to = self.query_one("#date-to", Input).value.strip() or None
+
         rows = query_posts(
             self.conn,
             site_id=site_id,
             post_types=post_types,
             search=(search + "*") if search else None,
+            category=category,
+            tag=tag,
+            date_from=date_from,
+            date_to=date_to,
         )
         table = self.query_one("#post-table", DataTable)
         table.clear()
@@ -513,8 +590,9 @@ class WPReaderApp(App):
         html = prepare_html(post.content)
         search = self.query_one("#search", Input).value.strip()
         terms = extract_search_terms(search)
+        self._highlighted_matches = []
         if terms:
-            html = highlight_html(html, terms)
+            html, self._highlighted_matches = highlight_html(html, terms)
         md = html_to_markdown(html)
         if terms:
             md = apply_highlight_markers(md)
@@ -569,6 +647,13 @@ class WPReaderApp(App):
             search.value = ""
         else:
             self.query_one("#post-table", DataTable).focus()
+
+    def action_copy_highlights(self) -> None:
+        if not self._highlighted_matches:
+            self.notify("No highlighted search matches to copy.", severity="warning")
+            return
+        self.copy_to_clipboard("\n".join(self._highlighted_matches))
+        self.notify(f"Copied {len(self._highlighted_matches)} highlighted match(es) to clipboard.")
 
     def action_export_html(self) -> None:
         if self.current_post:

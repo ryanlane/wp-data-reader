@@ -58,12 +58,39 @@ def list_post_types(conn: sqlite3.Connection, site_id: int | None) -> list[str]:
     return [r["post_type"] for r in rows]
 
 
+def list_terms(conn: sqlite3.Connection, site_id: int | None, taxonomy: str) -> list[tuple[str, str]]:
+    """Distinct (name, slug) pairs for a taxonomy, for populating a filter dropdown."""
+    if site_id is None:
+        rows = conn.execute(
+            """SELECT DISTINCT te.name AS name, te.slug AS slug
+               FROM term_taxonomy tt
+               JOIN terms te ON te.site_id = tt.site_id AND te.term_id = tt.term_id
+               WHERE tt.taxonomy = ?
+               ORDER BY te.name""",
+            (taxonomy,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT DISTINCT te.name AS name, te.slug AS slug
+               FROM term_taxonomy tt
+               JOIN terms te ON te.site_id = tt.site_id AND te.term_id = tt.term_id
+               WHERE tt.site_id = ? AND tt.taxonomy = ?
+               ORDER BY te.name""",
+            (site_id, taxonomy),
+        ).fetchall()
+    return [(r["name"], r["slug"]) for r in rows]
+
+
 def query_posts(
     conn: sqlite3.Connection,
     site_id: int | None = None,
     post_types: list[str] | None = None,
     statuses: list[str] | None = None,
     search: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[sqlite3.Row]:
     clauses = []
     params: list = []
@@ -87,6 +114,22 @@ def query_posts(
     if statuses:
         clauses.append(f"p.post_status IN ({','.join('?' * len(statuses))})")
         params.extend(statuses)
+    for taxonomy, slug in (("category", category), ("post_tag", tag)):
+        if slug:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM term_relationships tr "
+                "JOIN term_taxonomy tt ON tt.site_id = tr.site_id AND tt.term_taxonomy_id = tr.term_taxonomy_id "
+                "JOIN terms te ON te.site_id = tr.site_id AND te.term_id = tt.term_id "
+                "WHERE tr.site_id = p.site_id AND tr.object_id = p.wp_id "
+                "AND tt.taxonomy = ? AND te.slug = ?)"
+            )
+            params.extend([taxonomy, slug])
+    if date_from:
+        clauses.append("p.post_date >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("p.post_date <= ?")
+        params.append(date_to + " 23:59:59")
 
     sql = base + ("" if not clauses else " AND " + " AND ".join(clauses))
     sql += " ORDER BY p.post_date DESC"
