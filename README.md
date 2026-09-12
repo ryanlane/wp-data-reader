@@ -50,24 +50,27 @@ the flag repeated.
 - `/` — focus the search box (full-text search over title/content/excerpt,
   debounced so fast typing doesn't re-query on every keystroke); matches are
   highlighted in the content view
-- `f` — open the Filters dialog. The first time a dump set's cache already
-  has data (e.g. a later run against unchanged dumps), this opens
-  automatically before the table appears, so you can choose scope up front
-  instead of everything loading at once:
-  - Sites / Content types — checkboxes, so you can include more than one at
-    once; Posts and Pages are checked by default, since a WordPress
-    install's `posts` table is usually mostly revisions and plugin
-    bookkeeping rows otherwise
-  - Status — publish, draft, pending, private, ...
-  - Category / Tag dropdowns, populated from that taxonomy's terms
-  - From / To date fields, accepting `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`.
-    Filling in just one field matches only that period (e.g. `2018` alone
-    shows everything from 2018; `2018-02-08` alone shows just that day).
-    Filling in both gives a range (e.g. `2012-12` to `2013-02` covers
-    December 2012 through February 2013)
+- `f` — open the Filters dialog, with two tabs:
+  - **Status / Date / Taxonomy** (shown first when you reopen it) — Status
+    (publish, draft, pending, private, ...); Category / Tag dropdowns,
+    populated from that taxonomy's terms; and From / To date fields,
+    accepting `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`. Filling in just one field
+    matches only that period (e.g. `2018` alone shows everything from
+    2018; `2018-02-08` alone shows just that day). Filling in both gives a
+    range (e.g. `2012-12` to `2013-02` covers December 2012 through
+    February 2013)
+  - **Sites & Types** (or just "Content types" if the dump set is a single
+    site) — checkboxes, so you can include more than one at once; Posts
+    and Pages are checked by default, since a WordPress install's `posts`
+    table is usually mostly revisions and plugin bookkeeping rows
+    otherwise
 
-  Choices are saved next to the SQLite cache (`<cache>.filters.json`) and
-  reused on the next run against the same dump set.
+  The first time a dump set's cache already has data (e.g. a later run
+  against unchanged dumps), this opens automatically — on the Sites &
+  Types tab — before the table appears, so you choose scope up front
+  instead of everything loading at once. Choices are saved next to the
+  SQLite cache (`<cache>.filters.json`) and reused on the next run against
+  the same dump set.
 - `d` — toggle showing the date before the title in the list (on by
   default) and collapse the Type/Status/Date columns, so the date is
   visible without needing a very wide window
@@ -78,6 +81,8 @@ the flag repeated.
 - `m` — export the selected post/page as Markdown (with YAML front matter)
   — the export dialog's Save/Cancel buttons support both mouse clicks and
   Tab/Shift+Tab to move focus between the path field and the buttons
+- `escape` — clear the search box (or move focus to the table if it's
+  already empty)
 - `q` — quit
 
 Exports include an "embedded media" appendix that resolves images and
@@ -131,3 +136,6 @@ selection.
 - `app.py` — the Textual TUI.
 - `config.py` — reads/writes saved settings (Filters selection,
   `--uploads-dir`) in `<cache>.filters.json`, next to the SQLite cache.
+- `clipboard.py` — writes to the system clipboard via `xclip`/`xsel`/
+  `wl-copy` when one is installed, falling back to Textual's OSC 52
+  escape-sequence copy otherwise.
