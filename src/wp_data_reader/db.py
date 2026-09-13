@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS ngg_gallery (
 CREATE INDEX IF NOT EXISTS idx_ngg_gallery ON ngg_gallery(site_id, gid);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
-    post_title, post_content, post_excerpt,
+    post_title, post_content, post_excerpt, post_name,
     tokenize='porter unicode61'
 );
 """
@@ -145,7 +145,18 @@ def connect(db_path: Path) -> sqlite3.Connection:
 def rebuild_fts(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM posts_fts")
     conn.execute(
-        "INSERT INTO posts_fts(rowid, post_title, post_content, post_excerpt) "
-        "SELECT id, post_title, post_content, post_excerpt FROM posts"
+        "INSERT INTO posts_fts(rowid, post_title, post_content, post_excerpt, post_name) "
+        "SELECT id, post_title, post_content, post_excerpt, post_name FROM posts"
     )
     conn.commit()
+
+
+def ensure_fts_schema_current(conn: sqlite3.Connection) -> None:
+    """A cache built before post_name was added to posts_fts has a
+    3-column FTS table; CREATE VIRTUAL TABLE IF NOT EXISTS leaves that
+    alone, so drop and recreate it here, then let the caller repopulate it."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(posts_fts)")}
+    if cols and "post_name" not in cols:
+        conn.execute("DROP TABLE posts_fts")
+        conn.executescript(SCHEMA)
+        conn.commit()

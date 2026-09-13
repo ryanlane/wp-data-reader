@@ -475,7 +475,7 @@ class WPReaderApp(App):
             yield ProgressBar(id="import-bar", total=100, show_eta=False)
         with Horizontal():
             with Vertical(id="sidebar"):
-                yield Input(placeholder="Search title/content... (press /)", id="search")
+                yield Input(placeholder="Search title/content/slug... (press /)", id="search")
                 yield DataTable(id="post-table", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="detail"):
                 yield Static(id="meta-panel")

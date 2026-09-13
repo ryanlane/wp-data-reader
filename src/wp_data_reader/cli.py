@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .app import WPReaderApp
-from .db import connect
+from .db import connect, ensure_fts_schema_current
 from .importer import ensure_fts_backfilled
 
 
@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     # Creates the schema (and enables WAL) up front, synchronously, before
     # any worker process/thread touches the same file.
     conn = connect(db_path)
+    ensure_fts_schema_current(conn)
     ensure_fts_backfilled(conn)
 
     app = WPReaderApp(conn, db_path=db_path, dump_paths=args.dumps,
