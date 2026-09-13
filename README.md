@@ -4,6 +4,18 @@ A terminal UI for browsing, searching, and exporting posts and pages from
 WordPress SQL dumps (mysqldump / phpMyAdmin `.sql` files) — no MySQL server
 required.
 
+## Screenshots
+
+Screenshots below are from the small fictional sample dump in
+`docs/screenshots/make_sample_dump.py` (a made-up backyard-birding blog),
+not a real site.
+
+| | |
+|---|---|
+| ![Main view](docs/screenshots/main-view.svg) Main view — table on the left, rendered content on the right, with the current status shown next to the title. | ![Search with highlighting](docs/screenshots/search-highlight.svg) Search matches are highlighted in the content view, and `y` copies them. |
+| ![Filters dialog, initial setup](docs/screenshots/filters-setup.svg) The Filters dialog appears automatically the first time a dump set's cache already has data, so you choose scope before everything loads. | ![Filters dialog, reopened](docs/screenshots/filters-reopen.svg) Reopening it with `f` lands on Status/Date/Taxonomy instead, since that's what you're more likely to change day-to-day. |
+| ![Link click dialog](docs/screenshots/link-click.svg) Clicking a link or image in the content view asks what to do with it, rather than opening it immediately. | |
+
 ## Install
 
 This project uses [uv](https://docs.astral.sh/uv/) to manage the Python
